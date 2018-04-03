@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,36 +16,29 @@
 
 package org.springframework.web.client;
 
-import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.charset.Charset;
-import java.util.Collections;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
-import javax.servlet.GenericServlet;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
-import org.apache.commons.fileupload.FileItem;
-import org.apache.commons.fileupload.FileItemFactory;
-import org.apache.commons.fileupload.FileUploadException;
-import org.apache.commons.fileupload.disk.DiskFileItemFactory;
-import org.apache.commons.fileupload.servlet.ServletFileUpload;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.junit.AfterClass;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.annotation.JsonTypeName;
+import com.fasterxml.jackson.annotation.JsonView;
+import org.hamcrest.Matchers;
+import org.junit.Assume;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameter;
+import org.junit.runners.Parameterized.Parameters;
+
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpEntity;
@@ -53,24 +46,49 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.RequestEntity;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
-import org.springframework.util.FileCopyUtils;
+import org.springframework.http.client.Netty4ClientHttpRequestFactory;
+import org.springframework.http.client.OkHttp3ClientHttpRequestFactory;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.converter.json.MappingJacksonValue;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
-import org.springframework.util.SocketUtils;
 
 import static org.junit.Assert.*;
+import static org.springframework.http.HttpMethod.POST;
 
-/** @author Arjen Poutsma */
-public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
+/**
+ * @author Arjen Poutsma
+ * @author Brian Clozel
+ */
+@RunWith(Parameterized.class)
+public class RestTemplateIntegrationTests extends AbstractMockWebServerTestCase {
 
 	private RestTemplate template;
 
-	@Before
-	public void createTemplate() {
-		template = new RestTemplate(new HttpComponentsClientHttpRequestFactory());
+	@Parameter
+	public ClientHttpRequestFactory clientHttpRequestFactory;
+
+	@SuppressWarnings("deprecation")
+	@Parameters
+	public static Iterable<? extends ClientHttpRequestFactory> data() {
+		return Arrays.asList(
+				new SimpleClientHttpRequestFactory(),
+				new HttpComponentsClientHttpRequestFactory(),
+				new Netty4ClientHttpRequestFactory(),
+				new OkHttp3ClientHttpRequestFactory()
+		);
 	}
+
+
+	@Before
+	public void setupClient() {
+		 this.template = new RestTemplate(this.clientHttpRequestFactory);
+	}
+
 
 	@Test
 	public void getString() {
@@ -83,7 +101,7 @@ public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
 		ResponseEntity<String> entity = template.getForEntity(baseUrl + "/{method}", String.class, "get");
 		assertEquals("Invalid content", helloWorld, entity.getBody());
 		assertFalse("No headers", entity.getHeaders().isEmpty());
-		assertEquals("Invalid content-type", contentType, entity.getHeaders().getContentType());
+		assertEquals("Invalid content-type", textContentType, entity.getHeaders().getContentType());
 		assertEquals("Invalid status code", HttpStatus.OK, entity.getStatusCode());
 	}
 
@@ -128,8 +146,8 @@ public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
 	@Test
 	public void postForLocationEntity() throws URISyntaxException {
 		HttpHeaders entityHeaders = new HttpHeaders();
-		entityHeaders.setContentType(new MediaType("text", "plain", Charset.forName("ISO-8859-15")));
-		HttpEntity<String> entity = new HttpEntity<String>(helloWorld, entityHeaders);
+		entityHeaders.setContentType(new MediaType("text", "plain", StandardCharsets.ISO_8859_1));
+		HttpEntity<String> entity = new HttpEntity<>(helloWorld, entityHeaders);
 		URI location = template.postForLocation(baseUrl + "/{method}", entity, "post");
 		assertEquals("Invalid location", new URI(baseUrl + "/post/1"), location);
 	}
@@ -137,6 +155,15 @@ public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
 	@Test
 	public void postForObject() throws URISyntaxException {
 		String s = template.postForObject(baseUrl + "/{method}", helloWorld, String.class, "post");
+		assertEquals("Invalid content", helloWorld, s);
+	}
+
+	@Test
+	public void patchForObject() throws URISyntaxException {
+		// JDK client does not support the PATCH method
+		Assume.assumeThat(this.clientHttpRequestFactory,
+				Matchers.not(Matchers.instanceOf(SimpleClientHttpRequestFactory.class)));
+		String s = template.patchForObject(baseUrl + "/{method}", helloWorld, String.class, "patch");
 		assertEquals("Invalid content", helloWorld, s);
 	}
 
@@ -187,7 +214,7 @@ public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
 
 	@Test
 	public void multipart() throws UnsupportedEncodingException {
-		MultiValueMap<String, Object> parts = new LinkedMultiValueMap<String, Object>();
+		MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
 		parts.add("name 1", "value 1");
 		parts.add("name 2", "value 2+1");
 		parts.add("name 2", "value 2+2");
@@ -198,11 +225,20 @@ public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
 	}
 
 	@Test
-	@SuppressWarnings("unchecked")
+	public void form() throws UnsupportedEncodingException {
+		MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+		form.add("name 1", "value 1");
+		form.add("name 2", "value 2+1");
+		form.add("name 2", "value 2+2");
+
+		template.postForLocation(baseUrl + "/form", form);
+	}
+
+	@Test
 	public void exchangeGet() throws Exception {
 		HttpHeaders requestHeaders = new HttpHeaders();
 		requestHeaders.set("MyHeader", "MyValue");
-		HttpEntity<?> requestEntity = new HttpEntity(requestHeaders);
+		HttpEntity<String> requestEntity = new HttpEntity<>(requestHeaders);
 		ResponseEntity<String> response =
 				template.exchange(baseUrl + "/{method}", HttpMethod.GET, requestEntity, String.class, "get");
 		assertEquals("Invalid content", helloWorld, response.getBody());
@@ -213,10 +249,161 @@ public class RestTemplateIntegrationTests extends AbstractJettyServerTestCase {
 		HttpHeaders requestHeaders = new HttpHeaders();
 		requestHeaders.set("MyHeader", "MyValue");
 		requestHeaders.setContentType(MediaType.TEXT_PLAIN);
-		HttpEntity<String> requestEntity = new HttpEntity<String>(helloWorld, requestHeaders);
-		HttpEntity<Void> result = template.exchange(baseUrl + "/{method}", HttpMethod.POST, requestEntity, Void.class, "post");
+		HttpEntity<String> entity = new HttpEntity<>(helloWorld, requestHeaders);
+		HttpEntity<Void> result = template.exchange(baseUrl + "/{method}", POST, entity, Void.class, "post");
 		assertEquals("Invalid location", new URI(baseUrl + "/post/1"), result.getHeaders().getLocation());
 		assertFalse(result.hasBody());
+	}
+
+	@Test
+	public void jsonPostForObject() throws URISyntaxException {
+		HttpHeaders entityHeaders = new HttpHeaders();
+		entityHeaders.setContentType(new MediaType("application", "json", StandardCharsets.UTF_8));
+		MySampleBean bean = new MySampleBean();
+		bean.setWith1("with");
+		bean.setWith2("with");
+		bean.setWithout("without");
+		HttpEntity<MySampleBean> entity = new HttpEntity<>(bean, entityHeaders);
+		String s = template.postForObject(baseUrl + "/jsonpost", entity, String.class);
+		assertTrue(s.contains("\"with1\":\"with\""));
+		assertTrue(s.contains("\"with2\":\"with\""));
+		assertTrue(s.contains("\"without\":\"without\""));
+	}
+
+	@Test
+	public void jsonPostForObjectWithJacksonView() throws URISyntaxException {
+		HttpHeaders entityHeaders = new HttpHeaders();
+		entityHeaders.setContentType(new MediaType("application", "json", StandardCharsets.UTF_8));
+		MySampleBean bean = new MySampleBean("with", "with", "without");
+		MappingJacksonValue jacksonValue = new MappingJacksonValue(bean);
+		jacksonValue.setSerializationView(MyJacksonView1.class);
+		HttpEntity<MappingJacksonValue> entity = new HttpEntity<>(jacksonValue, entityHeaders);
+		String s = template.postForObject(baseUrl + "/jsonpost", entity, String.class);
+		assertTrue(s.contains("\"with1\":\"with\""));
+		assertFalse(s.contains("\"with2\":\"with\""));
+		assertFalse(s.contains("\"without\":\"without\""));
+	}
+
+	@Test  // SPR-12123
+	public void serverPort() {
+		String s = template.getForObject("http://localhost:{port}/get", String.class, port);
+		assertEquals("Invalid content", helloWorld, s);
+	}
+
+	@Test  // SPR-13154
+	public void jsonPostForObjectWithJacksonTypeInfoList() throws URISyntaxException {
+		List<ParentClass> list = new ArrayList<>();
+		list.add(new Foo("foo"));
+		list.add(new Bar("bar"));
+		ParameterizedTypeReference<?> typeReference = new ParameterizedTypeReference<List<ParentClass>>() {};
+		RequestEntity<List<ParentClass>> entity = RequestEntity
+				.post(new URI(baseUrl + "/jsonpost"))
+				.contentType(new MediaType("application", "json", StandardCharsets.UTF_8))
+				.body(list, typeReference.getType());
+		String content = template.exchange(entity, String.class).getBody();
+		assertTrue(content.contains("\"type\":\"foo\""));
+		assertTrue(content.contains("\"type\":\"bar\""));
+	}
+
+	@Test  // SPR-15015
+	public void postWithoutBody() throws Exception {
+		assertNull(template.postForObject(baseUrl + "/jsonpost", null, String.class));
+	}
+
+
+	public interface MyJacksonView1 {}
+
+	public interface MyJacksonView2 {}
+
+
+	public static class MySampleBean {
+
+		@JsonView(MyJacksonView1.class)
+		private String with1;
+
+		@JsonView(MyJacksonView2.class)
+		private String with2;
+
+		private String without;
+
+		private MySampleBean() {
+		}
+
+		private MySampleBean(String with1, String with2, String without) {
+			this.with1 = with1;
+			this.with2 = with2;
+			this.without = without;
+		}
+
+		public String getWith1() {
+			return with1;
+		}
+
+		public void setWith1(String with1) {
+			this.with1 = with1;
+		}
+
+		public String getWith2() {
+			return with2;
+		}
+
+		public void setWith2(String with2) {
+			this.with2 = with2;
+		}
+
+		public String getWithout() {
+			return without;
+		}
+
+		public void setWithout(String without) {
+			this.without = without;
+		}
+	}
+
+
+	@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "type")
+	public static class ParentClass {
+
+		private String parentProperty;
+
+		public ParentClass() {
+		}
+
+		public ParentClass(String parentProperty) {
+			this.parentProperty = parentProperty;
+		}
+
+		public String getParentProperty() {
+			return parentProperty;
+		}
+
+		public void setParentProperty(String parentProperty) {
+			this.parentProperty = parentProperty;
+		}
+	}
+
+
+	@JsonTypeName("foo")
+	public static class Foo extends ParentClass {
+
+		public Foo() {
+		}
+
+		public Foo(String parentProperty) {
+			super(parentProperty);
+		}
+	}
+
+
+	@JsonTypeName("bar")
+	public static class Bar extends ParentClass {
+
+		public Bar() {
+		}
+
+		public Bar(String parentProperty) {
+			super(parentProperty);
+		}
 	}
 
 }

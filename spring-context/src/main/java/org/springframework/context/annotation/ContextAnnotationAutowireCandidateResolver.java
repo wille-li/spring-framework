@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,20 +18,28 @@ package org.springframework.context.annotation;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.springframework.aop.TargetSource;
 import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.annotation.QualifierAnnotationAutowireCandidateResolver;
 import org.springframework.beans.factory.config.DependencyDescriptor;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.annotation.AnnotationUtils;
+import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 
 /**
- * Complete implementation of the {@link org.springframework.beans.factory.support.AutowireCandidateResolver}
- * strategy interface, providing support for qualifier annotations as well as for lazy resolution driven
- * by the {@link Lazy} annotation in the {@code context.annotation} package.
+ * Complete implementation of the
+ * {@link org.springframework.beans.factory.support.AutowireCandidateResolver} strategy
+ * interface, providing support for qualifier annotations as well as for lazy resolution
+ * driven by the {@link Lazy} annotation in the {@code context.annotation} package.
  *
  * @author Juergen Hoeller
  * @since 4.0
@@ -39,7 +47,8 @@ import org.springframework.util.Assert;
 public class ContextAnnotationAutowireCandidateResolver extends QualifierAnnotationAutowireCandidateResolver {
 
 	@Override
-	public Object getLazyResolutionProxyIfNecessary(DependencyDescriptor descriptor, String beanName) {
+	@Nullable
+	public Object getLazyResolutionProxyIfNecessary(DependencyDescriptor descriptor, @Nullable String beanName) {
 		return (isLazy(descriptor) ? buildLazyResolutionProxy(descriptor, beanName) : null);
 	}
 
@@ -53,7 +62,7 @@ public class ContextAnnotationAutowireCandidateResolver extends QualifierAnnotat
 		MethodParameter methodParam = descriptor.getMethodParameter();
 		if (methodParam != null) {
 			Method method = methodParam.getMethod();
-			if (method == null || void.class.equals(method.getReturnType())) {
+			if (method == null || void.class == method.getReturnType()) {
 				Lazy lazy = AnnotationUtils.getAnnotation(methodParam.getAnnotatedElement(), Lazy.class);
 				if (lazy != null && lazy.value()) {
 					return true;
@@ -63,7 +72,7 @@ public class ContextAnnotationAutowireCandidateResolver extends QualifierAnnotat
 		return false;
 	}
 
-	protected Object buildLazyResolutionProxy(final DependencyDescriptor descriptor, final String beanName) {
+	protected Object buildLazyResolutionProxy(final DependencyDescriptor descriptor, final @Nullable String beanName) {
 		Assert.state(getBeanFactory() instanceof DefaultListableBeanFactory,
 				"BeanFactory needs to be a DefaultListableBeanFactory");
 		final DefaultListableBeanFactory beanFactory = (DefaultListableBeanFactory) getBeanFactory();
@@ -78,7 +87,22 @@ public class ContextAnnotationAutowireCandidateResolver extends QualifierAnnotat
 			}
 			@Override
 			public Object getTarget() {
-				return beanFactory.doResolveDependency(descriptor, beanName, null, null);
+				Object target = beanFactory.doResolveDependency(descriptor, beanName, null, null);
+				if (target == null) {
+					Class<?> type = getTargetClass();
+					if (Map.class == type) {
+						return Collections.emptyMap();
+					}
+					else if (List.class == type) {
+						return Collections.emptyList();
+					}
+					else if (Set.class == type || Collection.class == type) {
+						return Collections.emptySet();
+					}
+					throw new NoSuchBeanDefinitionException(descriptor.getResolvableType(),
+							"Optional dependency not present for lazy injection point");
+				}
+				return target;
 			}
 			@Override
 			public void releaseTarget(Object target) {
